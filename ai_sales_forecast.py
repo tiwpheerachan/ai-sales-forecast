@@ -23,73 +23,67 @@ def load_excel(file):
     return dfs
 
 @st.cache_resource
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.preprocessing import LabelEncoder
+import pandas as pd
+
 def train_model(df_perf, df_gmv):
+    # Clean GMV
     df_gmv["Data"] = pd.to_datetime(df_gmv["Data"], errors="coerce")
-
-    def classify_campaign_type(date):
-        if pd.isna(date): return "unknown"
-        if date.day == date.month: return "dday"
-        elif date.day == 15: return "midmonth"
-        elif date.day == 25: return "payday"
-        else: return "normal_day"
-
-    df_gmv["campaign_type"] = df_gmv["Data"].apply(classify_campaign_type)
+    df_gmv["campaign_type"] = df_gmv["Data"].apply(lambda d: "unknown" if pd.isna(d) else (
+        "dday" if d.day == d.month else "midmonth" if d.day == 15 else "payday" if d.day == 25 else "normal_day"))
     df_gmv["year_month"] = df_gmv["Data"].dt.to_period("M")
 
-    month_map = {month.upper(): idx for idx, month in enumerate(calendar.month_abbr) if month}
+    # Clean Performance
+    month_map = {m.upper(): i for i, m in enumerate(['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'], start=1)}
     df_perf["month_num"] = df_perf["Month"].str[:3].str.upper().map(month_map)
     df_perf["date"] = pd.to_datetime(dict(year=df_perf["Year"], month=df_perf["month_num"], day=1), errors="coerce")
     df_perf["year_month"] = df_perf["date"].dt.to_period("M")
 
-    campaign_map = df_gmv[["year_month", "campaign_type"]].drop_duplicates()
-    df = pd.merge(df_perf, campaign_map, on="year_month", how="left")
-
+    # Merge + Clean
+    df = pd.merge(df_perf, df_gmv[["year_month", "campaign_type"]].drop_duplicates(), on="year_month", how="left")
     df = df.rename(columns={
-        "Product": "product_name",
-        "Brand": "brand",
-        "Platforms": "platform",
-        "Sales (Confirmed Order) (THB)": "sales_thb",
-        "Units (Confirmed Order)": "units_sold",
+        "Product": "product_name", "Brand": "brand", "Platforms": "platform",
+        "Sales (Confirmed Order) (THB)": "sales_thb", "Units (Confirmed Order)": "units_sold",
         "Conversion Rate (Confirmed Order)": "conversion_rate"
     })
-
     df["conversion_rate"] = pd.to_numeric(df["conversion_rate"], errors="coerce")
     df["year_month"] = df["year_month"].astype(str)
     df = df.dropna(subset=["sales_thb", "brand", "product_name", "platform", "campaign_type"])
 
+    # Calculate Growth Rate
+    df["month_numeric"] = df["year_month"].apply(lambda x: int(x.replace("-", "")))
+    growth_rates = df.groupby(["product_name", "platform"]).apply(
+        lambda g: g.sort_values("month_numeric").assign(
+            pct_change=g["sales_thb"].pct_change().fillna(0)
+        )["pct_change"].mean()
+    ).reset_index(name="avg_growth_rate")
+
+    # Summary
     summary = df.groupby(["brand", "product_name", "platform", "year_month", "campaign_type"]).agg({
-        "sales_thb": "sum",
-        "units_sold": "sum",
-        "conversion_rate": "mean"
+        "sales_thb": "sum", "units_sold": "sum", "conversion_rate": "mean"
     }).reset_index()
+    summary = pd.merge(summary, growth_rates, on=["product_name", "platform"], how="left").fillna(0)
 
-    le_brand = LabelEncoder()
-    le_product = LabelEncoder()
-    le_platform = LabelEncoder()
-    le_campaign = LabelEncoder()
-
-    summary["month_enc"] = summary["year_month"].apply(lambda x: int(str(x).replace("-", "")))
+    # Encode
+    le_brand, le_product, le_platform, le_campaign = LabelEncoder(), LabelEncoder(), LabelEncoder(), LabelEncoder()
+    summary["month_enc"] = summary["year_month"].apply(lambda x: int(x.replace("-", "")))
     summary["brand_enc"] = le_brand.fit_transform(summary["brand"])
     summary["product_enc"] = le_product.fit_transform(summary["product_name"])
     summary["platform_enc"] = le_platform.fit_transform(summary["platform"])
     summary["campaign_enc"] = le_campaign.fit_transform(summary["campaign_type"])
 
-    X = summary[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc"]]
+    # Train Model
+    X = summary[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "avg_growth_rate"]]
     y = summary["sales_thb"]
-
     model = GradientBoostingRegressor(n_estimators=300, learning_rate=0.1, max_depth=6)
     model.fit(X, y)
 
-    encoders = {
-        "brand": le_brand,
-        "product": le_product,
-        "platform": le_platform,
-        "campaign": le_campaign
-    }
-
+    encoders = {"brand": le_brand, "product": le_product, "platform": le_platform, "campaign": le_campaign}
     return model, summary, encoders
 
-def forecast_future(summary, model, encoders, months_ahead):
+def forecast_future(summary, model, encoders, months_ahead, growth_expectation=1.0):
+    from datetime import datetime
     future_dates = pd.date_range(datetime.today(), periods=months_ahead, freq="MS").to_period("M").astype(str)
     base = summary[["brand", "product_name", "platform", "campaign_type"]].drop_duplicates()
 
@@ -97,10 +91,8 @@ def forecast_future(summary, model, encoders, months_ahead):
     for month in future_dates:
         for _, row in base.iterrows():
             rows.append({
-                "brand": row["brand"],
-                "product_name": row["product_name"],
-                "platform": row["platform"],
-                "campaign_type": row["campaign_type"],
+                "brand": row["brand"], "product_name": row["product_name"],
+                "platform": row["platform"], "campaign_type": row["campaign_type"],
                 "year_month": month
             })
 
@@ -109,9 +101,14 @@ def forecast_future(summary, model, encoders, months_ahead):
     future["product_enc"] = encoders["product"].transform(future["product_name"])
     future["platform_enc"] = encoders["platform"].transform(future["platform"])
     future["campaign_enc"] = encoders["campaign"].transform(future["campaign_type"])
-    future["month_enc"] = future["year_month"].apply(lambda x: int(str(x).replace("-", "")))
+    future["month_enc"] = future["year_month"].apply(lambda x: int(x.replace("-", "")))
 
-    X = future[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc"]]
+    # เติม growth rate จาก summary
+    growth_lookup = summary.groupby(["product_name", "platform"])["avg_growth_rate"].mean().reset_index()
+    future = pd.merge(future, growth_lookup, on=["product_name", "platform"], how="left").fillna(0)
+    future["adjusted_growth"] = future["avg_growth_rate"] * growth_expectation
+
+    X = future[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "adjusted_growth"]]
     future["forecast_sales"] = model.predict(X)
     return future
 
