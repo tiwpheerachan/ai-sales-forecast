@@ -23,10 +23,6 @@ def load_excel(file):
     return dfs
 
 @st.cache_resource
-from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.preprocessing import LabelEncoder
-import pandas as pd
-
 def train_model(df_perf, df_gmv):
     # Clean GMV
     df_gmv["Data"] = pd.to_datetime(df_gmv["Data"], errors="coerce")
