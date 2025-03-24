@@ -5,7 +5,7 @@ import plotly.express as px
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import LabelEncoder
 from datetime import datetime
-from dateutil.relativedelta import relativedelta
+import calendar
 
 st.set_page_config(page_title="📊 AI Sales & Product Forecasting", layout="wide")
 
@@ -36,12 +36,11 @@ def train_model(df_perf, df_gmv):
     df_gmv["campaign_type"] = df_gmv["Data"].apply(classify_campaign_type)
     df_gmv["year_month"] = df_gmv["Data"].dt.to_period("M")
 
-    month_map = {'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
-                 'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12}
-
-    df_perf["month_num"] = df_perf["Month"].map(month_map)
-    df_perf["date"] = pd.to_datetime(dict(year=df_perf["Year"], month=df_perf["month_num"], day=1))
+    month_map = {month.upper(): idx for idx, month in enumerate(calendar.month_abbr) if month}
+    df_perf["month_num"] = df_perf["Month"].str[:3].str.upper().map(month_map)
+    df_perf["date"] = pd.to_datetime(dict(year=df_perf["Year"], month=df_perf["month_num"], day=1), errors="coerce")
     df_perf["year_month"] = df_perf["date"].dt.to_period("M")
+
     campaign_map = df_gmv[["year_month", "campaign_type"]].drop_duplicates()
     df = pd.merge(df_perf, campaign_map, on="year_month", how="left")
 
@@ -53,8 +52,10 @@ def train_model(df_perf, df_gmv):
         "Units (Confirmed Order)": "units_sold",
         "Conversion Rate (Confirmed Order)": "conversion_rate"
     })
+
     df["conversion_rate"] = pd.to_numeric(df["conversion_rate"], errors="coerce")
-    df["year_month"] = df["date"].dt.to_period("M").astype(str)
+    df["year_month"] = df["year_month"].astype(str)
+    df = df.dropna(subset=["sales_thb", "brand", "product_name", "platform", "campaign_type"])
 
     summary = df.groupby(["brand", "product_name", "platform", "year_month", "campaign_type"]).agg({
         "sales_thb": "sum",
@@ -62,40 +63,59 @@ def train_model(df_perf, df_gmv):
         "conversion_rate": "mean"
     }).reset_index()
 
-    le = LabelEncoder()
-    summary["brand_enc"] = le.fit_transform(summary["brand"])
-    summary["product_enc"] = le.fit_transform(summary["product_name"])
-    summary["platform_enc"] = le.fit_transform(summary["platform"])
-    summary["campaign_enc"] = le.fit_transform(summary["campaign_type"])
-    summary["month_enc"] = le.fit_transform(summary["year_month"])
+    le_brand = LabelEncoder()
+    le_product = LabelEncoder()
+    le_platform = LabelEncoder()
+    le_campaign = LabelEncoder()
+    le_month = LabelEncoder()
+
+    summary["brand_enc"] = le_brand.fit_transform(summary["brand"])
+    summary["product_enc"] = le_product.fit_transform(summary["product_name"])
+    summary["platform_enc"] = le_platform.fit_transform(summary["platform"])
+    summary["campaign_enc"] = le_campaign.fit_transform(summary["campaign_type"])
+    summary["month_enc"] = le_month.fit_transform(summary["year_month"])
 
     X = summary[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc"]]
     y = summary["sales_thb"]
 
-    model = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=5, min_samples_split=5) # Adjusted parameters
+    model = GradientBoostingRegressor(n_estimators=300, learning_rate=0.1, max_depth=6)
     model.fit(X, y)
-    return model, summary, le
 
-def future_data(df, months_ahead, le):
-    future_months = pd.date_range(datetime.today(), periods=months_ahead, freq='MS').to_period("M").astype(str)
-    future_rows = []
-    unique = df[["brand", "product_name", "platform"]].drop_duplicates() # Removed campaign_type
-    for month in future_months:
-        for _, row in unique.iterrows():
-            future_rows.append({
+    encoders = {
+        "brand": le_brand,
+        "product": le_product,
+        "platform": le_platform,
+        "campaign": le_campaign,
+        "month": le_month
+    }
+
+    return model, summary, encoders
+
+def forecast_future(summary, model, encoders, months_ahead):
+    future_dates = pd.date_range(datetime.today(), periods=months_ahead, freq="MS").to_period("M").astype(str)
+    base = summary[["brand", "product_name", "platform", "campaign_type"]].drop_duplicates()
+
+    rows = []
+    for month in future_dates:
+        for _, row in base.iterrows():
+            rows.append({
                 "brand": row["brand"],
                 "product_name": row["product_name"],
                 "platform": row["platform"],
-                "campaign_type": "normal_day", # Set to normal_day to reduce variance
+                "campaign_type": row["campaign_type"],
                 "year_month": month
             })
-    future_df = pd.DataFrame(future_rows)
-    future_df["brand_enc"] = le.fit_transform(future_df["brand"])
-    future_df["product_enc"] = le.fit_transform(future_df["product_name"])
-    future_df["platform_enc"] = le.fit_transform(future_df["platform"])
-    future_df["campaign_enc"] = le.fit_transform(future_df["campaign_type"])
-    future_df["month_enc"] = le.fit_transform(future_df["year_month"])
-    return future_df
+
+    future = pd.DataFrame(rows)
+    future["brand_enc"] = encoders["brand"].transform(future["brand"])
+    future["product_enc"] = encoders["product"].transform(future["product_name"])
+    future["platform_enc"] = encoders["platform"].transform(future["platform"])
+    future["campaign_enc"] = encoders["campaign"].transform(future["campaign_type"])
+    future["month_enc"] = encoders["month"].transform(future["year_month"])
+
+    X = future[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc"]]
+    future["forecast_sales"] = model.predict(X)
+    return future
 
 # === UI ===
 st.title("🧠 AI Sales & Product Forecasting Dashboard")
@@ -103,34 +123,60 @@ uploaded_file = st.sidebar.file_uploader("📂 Upload Excel File", type=["xlsx"]
 months_to_predict = st.sidebar.slider("🔮 Forecast Months Ahead", 1, 60, 3)
 
 if uploaded_file:
-    data = load_excel(uploaded_file)
-    perf_sheet = next((k for k in data if "Perf" in k or "Performance" in k), None)
-    gmv_sheet = next((k for k in data if "GMV" in k), None)
+    dfs = load_excel(uploaded_file)
+    perf_sheet = next((k for k in dfs if "Perf" in k or "Performance" in k), None)
+    gmv_sheet = next((k for k in dfs if "GMV" in k), None)
 
     if perf_sheet and gmv_sheet:
-        df_perf = data[perf_sheet]
-        df_gmv = data[gmv_sheet]
-        model, df_raw, le = train_model(df_perf, df_gmv)
-        df_future = future_data(df_raw, months_to_predict, le)
+        df_perf = dfs[perf_sheet]
+        df_gmv = dfs[gmv_sheet]
+        model, summary, encoders = train_model(df_perf, df_gmv)
+        df_future = forecast_future(summary, model, encoders, months_to_predict)
 
-        X_future = df_future[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc"]]
-        df_future["forecast_sales"] = model.predict(X_future)
+        platform = st.sidebar.selectbox("เลือก Platform", ["All"] + sorted(df_future["platform"].unique()))
+        if platform != "All":
+            df_future = df_future[df_future["platform"] == platform]
 
-        st.sidebar.subheader("🎯 Filter")
-        selected_platform = st.sidebar.selectbox("เลือกแพลตฟอร์ม", ["All"] + sorted(df_future["platform"].dropna().unique()))
-        if selected_platform != "All":
-            df_future = df_future[df_future["platform"] == selected_platform]
-
-        # === Metrics ===
+        # Metrics
         total_sales = df_future["forecast_sales"].sum()
         total_skus = df_future["product_name"].nunique()
         avg_sales = total_sales / total_skus if total_skus > 0 else 0
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("💰 Forecasted Sales", f"{total_sales:,.2f} THB")
-        col2.metric("📦 Total SKUs", f"{total_skus:,}")
-        col3.metric("📈 Avg. Sales per SKU", f"{avg_sales:,.2f}")
+        col1.metric("💰 Forecasted Sales", f"{total_sales:,.0f} THB")
+        col2.metric("📦 Total SKUs", f"{total_skus}")
+        col3.metric("📈 Avg. Sales/SKU", f"{avg_sales:,.2f} THB")
 
-        # === Forecast Graphs ===
-        st.subheader("📊 Forecast Trend by Month")
-        df_
+        # Graph 1: Forecast Trend
+        st.subheader("📈 Forecasted Sales Trend by Month")
+        df_trend = df_future.groupby("year_month")["forecast_sales"].sum().reset_index()
+        fig1 = px.line(df_trend, x="year_month", y="forecast_sales", markers=True)
+        st.plotly_chart(fig1, use_container_width=True)
+
+        # Graph 2: Top Products
+        st.subheader("🏆 Top Forecasted Products")
+        top_products = df_future.groupby("product_name")["forecast_sales"].sum().sort_values(ascending=False).head(15).reset_index()
+        fig2 = px.bar(top_products, x="forecast_sales", y="product_name", orientation="h", title="Top Products")
+        st.plotly_chart(fig2, use_container_width=True)
+
+        # Graph 3: Platform Comparison
+        st.subheader("📊 Forecasted Sales by Platform")
+        platform_summary = df_future.groupby("platform")["forecast_sales"].sum().reset_index()
+        fig3 = px.pie(platform_summary, names="platform", values="forecast_sales", hole=0.4)
+        st.plotly_chart(fig3, use_container_width=True)
+
+        # AI Recommendation
+        st.subheader("💡 AI แนะนำช่วงเวลาที่ควรโปรโมต")
+        rec = df_future.groupby(["year_month", "campaign_type"])["forecast_sales"].sum().reset_index()
+        top_rec = rec.sort_values("forecast_sales", ascending=False).head(3)
+        for _, row in top_rec.iterrows():
+            st.info(f"✨ เดือน `{row['year_month']}` แคมเปญ `{row['campaign_type']}` มีแนวโน้มยอดขายสูงถึง **{row['forecast_sales']:,.0f} THB**")
+
+        # Table
+        st.subheader("📄 Forecast Table (All SKUs)")
+        st.dataframe(df_future, use_container_width=True)
+
+    else:
+        st.warning("⚠️ ไม่พบ Sheet ที่ชื่อ Performance หรือ GMV")
+else:
+    st.info("📤 กรุณาอัปโหลดไฟล์ Excel เพื่อเริ่มต้น")
