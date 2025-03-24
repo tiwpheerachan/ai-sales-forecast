@@ -75,17 +75,26 @@ def forecast_future(df, model, le, months_ahead=6):
     year, month = map(int, latest.split("-"))
     future = []
 
-    for i in range(1, months_ahead+1):
+    for i in range(1, months_ahead + 1):
         m = month + i
         y = year + (m - 1) // 12
         m = (m - 1) % 12 + 1
         ym = f"{y}-{m:02d}"
         temp = df.copy()
         temp["year_month"] = ym
-        temp["month_enc"] = le.fit_transform([ym]*len(temp))
         future.append(temp)
 
-    df_future = pd.concat(future)
+    df_future = pd.concat(future, ignore_index=True)
+
+    # 🔧 ทำ Label Encoding อีกครั้ง
+    le = LabelEncoder()
+    df_future["brand_enc"] = le.fit_transform(df_future["brand"].astype(str))
+    df_future["product_enc"] = le.fit_transform(df_future["product_name"].astype(str))
+    df_future["platform_enc"] = le.fit_transform(df_future["platform"].astype(str))
+    df_future["campaign_enc"] = le.fit_transform(df_future["campaign_type"].astype(str))
+    df_future["month_enc"] = le.fit_transform(df_future["year_month"].astype(str))
+
+    # 🔮 ทำนาย
     X_future = df_future[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc"]]
     df_future["forecast_sales"] = model.predict(X_future)
     return df_future
