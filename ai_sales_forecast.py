@@ -67,13 +67,12 @@ def train_model(df_perf, df_gmv):
     le_product = LabelEncoder()
     le_platform = LabelEncoder()
     le_campaign = LabelEncoder()
-    le_month = LabelEncoder()
 
+    summary["month_enc"] = summary["year_month"].apply(lambda x: int(str(x).replace("-", "")))
     summary["brand_enc"] = le_brand.fit_transform(summary["brand"])
     summary["product_enc"] = le_product.fit_transform(summary["product_name"])
     summary["platform_enc"] = le_platform.fit_transform(summary["platform"])
     summary["campaign_enc"] = le_campaign.fit_transform(summary["campaign_type"])
-    summary["month_enc"] = le_month.fit_transform(summary["year_month"])
 
     X = summary[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc"]]
     y = summary["sales_thb"]
@@ -85,8 +84,7 @@ def train_model(df_perf, df_gmv):
         "brand": le_brand,
         "product": le_product,
         "platform": le_platform,
-        "campaign": le_campaign,
-        "month": le_month
+        "campaign": le_campaign
     }
 
     return model, summary, encoders
@@ -105,25 +103,19 @@ def forecast_future(summary, model, encoders, months_ahead):
                 "campaign_type": row["campaign_type"],
                 "year_month": month
             })
-def encode_month_str_to_numeric(month_str):
-    try:
-        year, month = map(int, month_str.split("-"))
-        return year * 12 + month
-    except:
-        return 0
 
     future = pd.DataFrame(rows)
     future["brand_enc"] = encoders["brand"].transform(future["brand"])
     future["product_enc"] = encoders["product"].transform(future["product_name"])
     future["platform_enc"] = encoders["platform"].transform(future["platform"])
     future["campaign_enc"] = encoders["campaign"].transform(future["campaign_type"])
-    future["month_enc"] = future["year_month"].apply(encode_month_str_to_numeric)
-    
+    future["month_enc"] = future["year_month"].apply(lambda x: int(str(x).replace("-", "")))
+
     X = future[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc"]]
     future["forecast_sales"] = model.predict(X)
     return future
 
-# === UI ===
+# === Streamlit UI ===
 st.title("🧠 AI Sales & Product Forecasting Dashboard")
 uploaded_file = st.sidebar.file_uploader("📂 Upload Excel File", type=["xlsx"])
 months_to_predict = st.sidebar.slider("🔮 Forecast Months Ahead", 1, 60, 3)
