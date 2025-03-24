@@ -1,15 +1,16 @@
+# === 📊 AI Sales & Product Forecasting (Full Version) ===
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import LabelEncoder
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
 from statsmodels.tsa.seasonal import seasonal_decompose
+from datetime import datetime
 
 st.set_page_config(page_title="📊 AI Sales & Product Forecasting", layout="wide")
 
+# === Load Excel File ===
 @st.cache_data
 def load_excel(file):
     xls = pd.ExcelFile(file)
@@ -22,6 +23,8 @@ def load_excel(file):
         except:
             continue
     return dfs
+
+# === Train Model ===
 @st.cache_resource
 def train_model(df_perf, df_gmv):
     # --- Clean GMV ---
@@ -59,33 +62,28 @@ def train_model(df_perf, df_gmv):
     summary = df.groupby(["brand", "product_name", "platform", "year_month", "campaign_type"]).agg({
         "sales_thb": "sum", "units_sold": "sum", "conversion_rate": "mean"
     }).reset_index()
-
     summary = pd.merge(summary, growth_rates, on=["product_name", "platform"], how="left").fillna(0)
 
-    # ✅ NEW: Calculate Trend using seasonal_decompose
+    # --- Trend Feature ---
     trend_list = []
     for (product, platform), group in summary.groupby(["product_name", "platform"]):
         ts = group.sort_values("year_month").set_index("year_month")["sales_thb"]
         ts.index = pd.PeriodIndex(ts.index, freq="M")
-        if len(ts) >= 6:  # ต้องมีข้อมูลอย่างน้อย 6 จุดเพื่อให้ seasonal_decompose ทำงานได้
+        if len(ts) >= 6:
             try:
                 result = seasonal_decompose(ts, model='additive', period=3, extrapolate_trend='freq')
-                trend_values = result.trend.fillna(method='bfill').fillna(method='ffill')  # เติม NaN
+                trend_values = result.trend.fillna(method='bfill').fillna(method='ffill')
             except:
                 trend_values = ts.copy()
         else:
             trend_values = ts.copy()
-
-        trend_df = trend_values.reset_index()
+        trend_df = trend_values.reset_index().rename(columns={"sales_thb": "trend"})
         trend_df["product_name"] = product
         trend_df["platform"] = platform
-        trend_df = trend_df.rename(columns={"sales_thb": "trend"})
         trend_list.append(trend_df)
 
     trend_all = pd.concat(trend_list)
     trend_all["year_month"] = trend_all["year_month"].astype(str)
-
-    # ✅ Merge trend into summary
     summary = pd.merge(summary, trend_all, on=["year_month", "product_name", "platform"], how="left")
     summary["trend"] = summary["trend"].fillna(method='bfill').fillna(method='ffill')
 
@@ -97,7 +95,6 @@ def train_model(df_perf, df_gmv):
     summary["platform_enc"] = le_platform.fit_transform(summary["platform"])
     summary["campaign_enc"] = le_campaign.fit_transform(summary["campaign_type"])
 
-    # ✅ Train Model
     features = ["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "avg_growth_rate", "trend"]
     X = summary[features]
     y = summary["sales_thb"]
@@ -110,12 +107,14 @@ def train_model(df_perf, df_gmv):
     encoders = {"brand": le_brand, "product": le_product, "platform": le_platform, "campaign": le_campaign}
     return model, summary, encoders
 
-def future_data(df, months_ahead, le):
+# === Forecast Future ===
+def forecast_future(summary, model, encoders, months_ahead):
     future_months = pd.date_range(datetime.today(), periods=months_ahead, freq='MS').to_period("M").astype(str)
+    base = summary[["brand", "product_name", "platform", "campaign_type"]].drop_duplicates()
+
     future_rows = []
-    unique = df[["brand", "product_name", "platform", "campaign_type"]].drop_duplicates()
     for month in future_months:
-        for _, row in unique.iterrows():
+        for _, row in base.iterrows():
             future_rows.append({
                 "brand": row["brand"],
                 "product_name": row["product_name"],
@@ -123,13 +122,23 @@ def future_data(df, months_ahead, le):
                 "campaign_type": row["campaign_type"],
                 "year_month": month
             })
-    future_df = pd.DataFrame(future_rows)
-    future_df["brand_enc"] = le.fit_transform(future_df["brand"])
-    future_df["product_enc"] = le.fit_transform(future_df["product_name"])
-    future_df["platform_enc"] = le.fit_transform(future_df["platform"])
-    future_df["campaign_enc"] = le.fit_transform(future_df["campaign_type"])
-    future_df["month_enc"] = le.fit_transform(future_df["year_month"])
-    return future_df
+
+    future = pd.DataFrame(future_rows)
+    future["brand_enc"] = encoders["brand"].transform(future["brand"])
+    future["product_enc"] = encoders["product"].transform(future["product_name"])
+    future["platform_enc"] = encoders["platform"].transform(future["platform"])
+    future["campaign_enc"] = encoders["campaign"].transform(future["campaign_type"])
+    future["month_enc"] = future["year_month"].apply(lambda x: int(x.replace("-", "")))
+
+    growth = summary.groupby(["product_name", "platform"])["avg_growth_rate"].mean().reset_index()
+    trend = summary.groupby(["product_name", "platform"])["trend"].mean().reset_index()
+    future = pd.merge(future, growth, on=["product_name", "platform"], how="left")
+    future = pd.merge(future, trend, on=["product_name", "platform"], how="left")
+    future[["avg_growth_rate", "trend"]] = future[["avg_growth_rate", "trend"]].fillna(0)
+
+    X_future = future[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "avg_growth_rate", "trend"]]
+    future["forecast_sales"] = model.predict(X_future)
+    return future
 
 # === UI ===
 st.title("🧠 AI Sales & Product Forecasting Dashboard")
@@ -144,11 +153,8 @@ if uploaded_file:
     if perf_sheet and gmv_sheet:
         df_perf = data[perf_sheet]
         df_gmv = data[gmv_sheet]
-        model, df_raw, le = train_model(df_perf, df_gmv)
-        df_future = future_data(df_raw, months_to_predict, le)
-
-        X_future = df_future[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc"]]
-        df_future["forecast_sales"] = model.predict(X_future)
+        model, summary, encoders = train_model(df_perf, df_gmv)
+        df_future = forecast_future(summary, model, encoders, months_to_predict)
 
         st.sidebar.subheader("🎯 Filter")
         selected_platform = st.sidebar.selectbox("เลือกแพลตฟอร์ม", ["All"] + sorted(df_future["platform"].dropna().unique()))
@@ -161,9 +167,9 @@ if uploaded_file:
         avg_sales = total_sales / total_skus if total_skus > 0 else 0
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("💰 Forecasted Sales", f"{total_sales:,.2f} THB")
-        col2.metric("📦 Total SKUs", f"{total_skus:,}")
-        col3.metric("📈 Avg. Sales per SKU", f"{avg_sales:,.2f}")
+        col1.metric("💰 Forecasted Sales", f"{total_sales:,.0f} THB")
+        col2.metric("📦 Total SKUs", f"{total_skus}")
+        col3.metric("📈 Avg. Sales/SKU", f"{avg_sales:,.2f} THB")
 
         # === Forecast Graphs ===
         st.subheader("📊 Forecast Trend by Month")
@@ -176,13 +182,11 @@ if uploaded_file:
         fig2 = px.bar(top_products, x="forecast_sales", y="product_name", orientation="h", height=600)
         st.plotly_chart(fig2, use_container_width=True)
 
-        # === Platform Comparison ===
         st.subheader("📊 Forecasted Sales by Platform")
         platform_summary = df_future.groupby("platform")["forecast_sales"].sum().reset_index()
         fig3 = px.pie(platform_summary, names="platform", values="forecast_sales", hole=0.4)
         st.plotly_chart(fig3, use_container_width=True)
 
-        # === AI Recommendation ===
         st.subheader("💡 AI แนะนำช่วงเวลาที่ควรโปรโมต")
         recommend = df_future.groupby(["year_month", "campaign_type"])["forecast_sales"].sum().reset_index()
         top_recommend = recommend.sort_values("forecast_sales", ascending=False).head(3)
