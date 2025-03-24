@@ -70,15 +70,15 @@ def train_model(df_perf, df_gmv):
     summary["campaign_enc"] = le_campaign.fit_transform(summary["campaign_type"])
 
   # Train Model (ปลอด NaN และ Infinity)
-X = summary[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "avg_growth_rate"]]
-y = summary["sales_thb"]
+    X = summary[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "avg_growth_rate"]]
+    y = summary["sales_thb"]
 
-# ✅ ลบ NaN/Inf ออกก่อน train
-X = X.replace([np.inf, -np.inf], np.nan).dropna()
-y = y[X.index]  # ให้ y สอดคล้องกับ X
+    # ✅ ลบ NaN/Inf ออกก่อน train
+    X = X.replace([np.inf, -np.inf], np.nan).dropna()
+    y = y[X.index]  # ให้ y สอดคล้องกับ X
 
-model = GradientBoostingRegressor(n_estimators=300, learning_rate=0.1, max_depth=6)
-model.fit(X, y)
+    model = GradientBoostingRegressor(n_estimators=300, learning_rate=0.1, max_depth=6)
+    model.fit(X, y)
 
     encoders = {"brand": le_brand, "product": le_product, "platform": le_platform, "campaign": le_campaign}
     return model, summary, encoders
