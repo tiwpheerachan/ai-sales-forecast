@@ -72,21 +72,21 @@ def train_model(df_perf, df_gmv):
     X = summary[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc"]]
     y = summary["sales_thb"]
 
-    model = GradientBoostingRegressor()
+    model = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=5, min_samples_split=5) # Adjusted parameters
     model.fit(X, y)
     return model, summary, le
 
 def future_data(df, months_ahead, le):
     future_months = pd.date_range(datetime.today(), periods=months_ahead, freq='MS').to_period("M").astype(str)
     future_rows = []
-    unique = df[["brand", "product_name", "platform", "campaign_type"]].drop_duplicates()
+    unique = df[["brand", "product_name", "platform"]].drop_duplicates() # Removed campaign_type
     for month in future_months:
         for _, row in unique.iterrows():
             future_rows.append({
                 "brand": row["brand"],
                 "product_name": row["product_name"],
                 "platform": row["platform"],
-                "campaign_type": row["campaign_type"],
+                "campaign_type": "normal_day", # Set to normal_day to reduce variance
                 "year_month": month
             })
     future_df = pd.DataFrame(future_rows)
@@ -133,29 +133,4 @@ if uploaded_file:
 
         # === Forecast Graphs ===
         st.subheader("📊 Forecast Trend by Month")
-        df_trend = df_future.groupby("year_month")["forecast_sales"].sum().reset_index()
-        fig1 = px.line(df_trend, x="year_month", y="forecast_sales", markers=True)
-        st.plotly_chart(fig1, use_container_width=True)
-
-        st.subheader("🏆 Top Forecasted Products")
-        top_products = df_future.groupby("product_name")["forecast_sales"].sum().sort_values(ascending=False).head(20).reset_index()
-        fig2 = px.bar(top_products, x="forecast_sales", y="product_name", orientation="h", height=600)
-        st.plotly_chart(fig2, use_container_width=True)
-
-        # === Platform Comparison ===
-        st.subheader("📊 Forecasted Sales by Platform")
-        platform_summary = df_future.groupby("platform")["forecast_sales"].sum().reset_index()
-        fig3 = px.pie(platform_summary, names="platform", values="forecast_sales", hole=0.4)
-        st.plotly_chart(fig3, use_container_width=True)
-
-        # === AI Recommendation ===
-        st.subheader("💡 AI แนะนำช่วงเวลาที่ควรโปรโมต")
-        recommend = df_future.groupby(["year_month", "campaign_type"])["forecast_sales"].sum().reset_index()
-        top_recommend = recommend.sort_values("forecast_sales", ascending=False).head(3)
-        for _, row in top_recommend.iterrows():
-            st.info(f"📅 เดือน `{row['year_month']}` แคมเปญ `{row['campaign_type']}` คาดว่าจะทำยอดขายได้สูงถึง **{row['forecast_sales']:,.0f} THB** 💥")
-
-    else:
-        st.error("❗ ไม่พบ Sheet 'Performance' หรือ 'GMV'")
-else:
-    st.info("📤 กรุณาอัปโหลดไฟล์ Excel (.xlsx)")
+        df_
