@@ -23,6 +23,8 @@ print(f"📂 ใช้ไฟล์: {excel_path}")
 # %%writefile app.py
 # # วางโค้ดทั้งหมดที่คุณได้จาก assistant ก่อนหน้า
 
+!ngrok config add-authtoken 2u7MjybUcTJZA97jJ0czDZKSs2N_4CbkdFrQet2Q6KPHFWAV9
+
 !streamlit run app.py &> /dev/null &
 
 # Commented out IPython magic to ensure Python compatibility.
