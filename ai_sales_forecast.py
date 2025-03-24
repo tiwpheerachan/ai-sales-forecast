@@ -84,7 +84,6 @@ def train_model(df_perf, df_gmv):
     return model, summary, encoders
 
 def forecast_future(summary, model, encoders, months_ahead, growth_expectation=1.0):
-    from datetime import datetime
     future_dates = pd.date_range(datetime.today(), periods=months_ahead, freq="MS").to_period("M").astype(str)
     base = summary[["brand", "product_name", "platform", "campaign_type"]].drop_duplicates()
 
@@ -92,26 +91,35 @@ def forecast_future(summary, model, encoders, months_ahead, growth_expectation=1
     for month in future_dates:
         for _, row in base.iterrows():
             rows.append({
-                "brand": row["brand"], "product_name": row["product_name"],
-                "platform": row["platform"], "campaign_type": row["campaign_type"],
+                "brand": row["brand"],
+                "product_name": row["product_name"],
+                "platform": row["platform"],
+                "campaign_type": row["campaign_type"],
                 "year_month": month
             })
 
     future = pd.DataFrame(rows)
+
+    # ✅ Encoding
     future["brand_enc"] = encoders["brand"].transform(future["brand"])
     future["product_enc"] = encoders["product"].transform(future["product_name"])
     future["platform_enc"] = encoders["platform"].transform(future["platform"])
     future["campaign_enc"] = encoders["campaign"].transform(future["campaign_type"])
     future["month_enc"] = future["year_month"].apply(lambda x: int(x.replace("-", "")))
 
-    # เติม growth rate จาก summary
+    # ✅ Merge avg_growth_rate แล้วคูณด้วย growth_expectation
     growth_lookup = summary.groupby(["product_name", "platform"])["avg_growth_rate"].mean().reset_index()
-    future = pd.merge(future, growth_lookup, on=["product_name", "platform"], how="left").fillna(0)
-    future["adjusted_growth"] = future["avg_growth_rate"] * growth_expectation
+    future = pd.merge(future, growth_lookup, on=["product_name", "platform"], how="left")
+    future["avg_growth_rate"] = future["avg_growth_rate"].fillna(0) * growth_expectation
 
-    X = future[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "adjusted_growth"]]
+    # ✅ Features ให้ตรงกับตอน train
+    X = future[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "avg_growth_rate"]]
+
+    # ✅ ทำนาย
     future["forecast_sales"] = model.predict(X)
+
     return future
+
 
 # === Streamlit UI ===
 st.title("🧠 AI Sales & Product Forecasting Dashboard")
