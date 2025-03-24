@@ -5,11 +5,14 @@ import plotly.express as px
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import LabelEncoder
 from datetime import datetime
+import calendar
 from statsmodels.tsa.seasonal import seasonal_decompose
+from sklearn.model_selection import GridSearchCV, KFold
+from sklearn.metrics import mean_squared_error
 
 st.set_page_config(page_title="📊 AI Sales & Product Forecasting", layout="wide")
 
-@st.cache_data
+@st.cache_resource
 def load_excel(file):
     xls = pd.ExcelFile(file)
     dfs = {}
@@ -97,19 +100,32 @@ def train_model(df_perf, df_gmv):
     summary["platform_enc"] = le_platform.fit_transform(summary["platform"])
     summary["campaign_enc"] = le_campaign.fit_transform(summary["campaign_type"])
 
-    # === TRAIN MODEL ===
+# === TRAIN MODEL ===
     features = ["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "avg_growth_rate", "trend"]
     X = summary[features].replace([np.inf, -np.inf], np.nan).dropna()
     y = summary.loc[X.index, "sales_thb"]
 
-    model = GradientBoostingRegressor(n_estimators=300, learning_rate=0.1, max_depth=6)
-    model.fit(X, y)
+    # Hyperparameter Tuning with GridSearchCV and Cross-Validation
+    param_grid = {
+        'n_estimators': [100, 200, 300],
+        'learning_rate': [0.01, 0.1, 0.2],
+        'max_depth': [3, 4, 5, 6],
+        'min_samples_split': [2, 5, 10],
+        'min_samples_leaf': [1, 2, 4]
+    }
+    model = GradientBoostingRegressor()
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    grid_search = GridSearchCV(model, param_grid, cv=kf, scoring='neg_mean_squared_error', n_jobs=-1)
+    grid_search.fit(X, y)
+
+    # Get the best model
+    best_model = grid_search.best_estimator_
 
     encoders = {
         "brand": le_brand, "product": le_product,
         "platform": le_platform, "campaign": le_campaign
     }
-    return model, summary, encoders
+    return best_model, summary, encoders
 
 def forecast_future(summary, model, encoders, months_ahead):
     future_months = pd.date_range(datetime.today(), periods=months_ahead, freq="MS").to_period("M").astype(str)
