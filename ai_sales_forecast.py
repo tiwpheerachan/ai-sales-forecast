@@ -105,14 +105,20 @@ def forecast_future(summary, model, encoders, months_ahead):
                 "campaign_type": row["campaign_type"],
                 "year_month": month
             })
+def encode_month_str_to_numeric(month_str):
+    try:
+        year, month = map(int, month_str.split("-"))
+        return year * 12 + month
+    except:
+        return 0
 
     future = pd.DataFrame(rows)
     future["brand_enc"] = encoders["brand"].transform(future["brand"])
     future["product_enc"] = encoders["product"].transform(future["product_name"])
     future["platform_enc"] = encoders["platform"].transform(future["platform"])
     future["campaign_enc"] = encoders["campaign"].transform(future["campaign_type"])
-    future["month_enc"] = encoders["month"].transform(future["year_month"])
-
+    future["month_enc"] = future["year_month"].apply(encode_month_str_to_numeric)
+    
     X = future[["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc"]]
     future["forecast_sales"] = model.predict(X)
     return future
