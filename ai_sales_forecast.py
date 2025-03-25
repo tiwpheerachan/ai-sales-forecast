@@ -8,26 +8,15 @@ from sklearn.preprocessing import LabelEncoder
 from datetime import datetime
 from statsmodels.tsa.seasonal import seasonal_decompose
 from sklearn.model_selection import GridSearchCV, KFold
+from openai import OpenAI
 import openai
 import pyttsx3
 
 # ตั้งค่า OpenAI API Key จาก secrets
+import openai
+import pyttsx3
+
 openai.api_key = st.secrets["openai_api_key"]
-
-st.set_page_config(page_title="📊 AI Sales & Product Forecasting", layout="wide")
-
-@st.cache_data
-def load_excel(file):
-    xls = pd.ExcelFile(file)
-    dfs = {}
-    for sheet in xls.sheet_names:
-        try:
-            df = xls.parse(sheet)
-            df.columns = df.columns.str.strip()
-            dfs[sheet] = df
-        except:
-            continue
-    return dfs
 
 def recommend_insights(df_future, summary):
     st.subheader("💡 AI วิเคราะห์ & แนะนำช่วงเวลาที่ควรโปรโมต")
@@ -35,36 +24,42 @@ def recommend_insights(df_future, summary):
     top_campaigns = df_future.groupby(["year_month", "campaign_type"])["forecast_sales"].sum().reset_index()
     top_campaigns = top_campaigns.sort_values("forecast_sales", ascending=False).head(3)
 
+    # แสดงแบบเบื้องต้น
     for _, row in top_campaigns.iterrows():
         st.success(
             f"📅 เดือน `{row['year_month']}` แคมเปญ `{row['campaign_type']}` "
             f"คาดการณ์ยอดขาย **{row['forecast_sales']:,.0f} THB**"
         )
 
+    # สรุปด้วย GPT
     st.subheader("🧠 สรุปโดย LLM (GPT)")
+
     insight_prompt = (
-        "สรุปแนวโน้มยอดขายสินค้าโดยดูจากแคมเปญที่คาดว่ายอดขายสูง "
-        "พร้อมให้คำแนะนำสำหรับนักการตลาดให้เข้าใจง่ายแบบภาษาไทย:"
+        "คุณคือผู้ช่วยวิเคราะห์ยอดขายสินค้า AI โปรดสรุปว่าทำไมสินค้าด้านล่างถึงจะขายดี "
+        "โดยอธิบายแนวโน้มยอดขายในแต่ละแคมเปญด้วยภาษาที่เข้าใจง่าย (ภาษาไทย):\n"
     )
     for _, row in top_campaigns.iterrows():
-        insight_prompt += f"เดือน {row['year_month']} แคมเปญ {row['campaign_type']} มียอดขาย {row['forecast_sales']:,.0f} บาท\n"
+        insight_prompt += f"- เดือน {row['year_month']} แคมเปญ {row['campaign_type']} คาดว่าจะมียอดขาย {row['forecast_sales']:,.0f} บาท\n"
 
     try:
-        gpt_response = openai.ChatCompletion.create(
+        response = openai.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": insight_prompt}],
-            max_tokens=250
+            max_tokens=500,
+            temperature=0.7
         )
-        summary_text = gpt_response['choices'][0]['message']['content']
+        summary_text = response.choices[0].message.content.strip()
         st.info(summary_text)
 
         if st.button("🔊 อ่านออกเสียง"):
             engine = pyttsx3.init()
+            engine.setProperty('rate', 150)  # ปรับความเร็วการอ่าน
             engine.say(summary_text)
             engine.runAndWait()
 
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการสรุปด้วย GPT: {e}")
+
 
 @st.cache_resource
 def train_model(df_perf, df_gmv, fast_mode=False):
