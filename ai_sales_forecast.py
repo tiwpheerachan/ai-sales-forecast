@@ -1,18 +1,18 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import openai
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import LabelEncoder
 from datetime import datetime
 import calendar
-import openai
-
-# ตั้งค่า OpenAI API Key จาก secrets
-openai.api_key = st.secrets["openai_api_key"]
+import os
 
 st.set_page_config(page_title="📊 AI Sales & Product Forecasting", layout="wide")
+
+# Set OpenAI API Key securely
+openai.api_key = st.secrets["openai_api_key"]
 
 @st.cache_data
 def load_excel(file):
@@ -48,8 +48,8 @@ def train_model(df_perf, df_gmv):
     df["conversion_rate"] = pd.to_numeric(df["conversion_rate"], errors="coerce")
     df["year_month"] = df["year_month"].astype(str)
     df = df.dropna(subset=["sales_thb", "brand", "product_name", "platform", "campaign_type"])
-
     df["month_numeric"] = df["year_month"].apply(lambda x: int(x.replace("-", "")))
+
     growth_rates = df.groupby(["product_name", "platform"]).apply(
         lambda g: g.sort_values("month_numeric").assign(
             pct_change=g["sales_thb"].pct_change().fillna(0)
@@ -87,8 +87,10 @@ def forecast_future(summary, model, encoders, months_ahead, growth_expectation=1
     for month in future_dates:
         for _, row in base.iterrows():
             rows.append({
-                "brand": row["brand"], "product_name": row["product_name"],
-                "platform": row["platform"], "campaign_type": row["campaign_type"],
+                "brand": row["brand"],
+                "product_name": row["product_name"],
+                "platform": row["platform"],
+                "campaign_type": row["campaign_type"],
                 "year_month": month
             })
 
@@ -108,24 +110,24 @@ def forecast_future(summary, model, encoders, months_ahead, growth_expectation=1
 
     return future
 
-def ai_recommendation(df):
-    top = df.sort_values("forecast_sales", ascending=False).head(5)
-    product_list = "\n".join(
-        [f"- {r['product_name']} ({r['platform']}): {r['forecast_sales']:,.0f} THB" for _, r in top.iterrows()]
-    )
-    prompt = (
-        f"คุณคือผู้ช่วยวิเคราะห์ยอดขายสินค้า AI โปรดวิเคราะห์ว่าสินค้าใดมีแนวโน้มขายดี พร้อมเหตุผลสั้น ๆ\n"
-        f"ข้อมูลสินค้าที่คาดการณ์:\n{product_list}"
-    )
+def generate_ai_insight(df_top):
+    prompt = f"""
+คุณคือผู้ช่วย AI ด้านการตลาด วิเคราะห์จากสินค้าขายดีด้านล่างนี้:
 
+{df_top.to_string(index=False)}
+
+โปรดให้ข้อเสนอแนะว่าทำไมสินค้ากลุ่มนี้ถึงขายดี และควรโปรโมตช่วงไหน พร้อมเหตุผลแบบมืออาชีพ
+"""
     response = openai.ChatCompletion.create(
         model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7
+        messages=[
+            {"role": "system", "content": "คุณคือผู้เชี่ยวชาญด้านการตลาด วิเคราะห์ยอดขาย และแนะนำช่วงเวลาที่ควรโปรโมต"},
+            {"role": "user", "content": prompt}
+        ]
     )
-    return response.choices[0].message["content"]
+    return response.choices[0].message.content.strip()
 
-# === Streamlit App ===
+# === UI ===
 st.title("🧠 AI Sales & Product Forecasting Dashboard")
 uploaded_file = st.sidebar.file_uploader("📂 Upload Excel File", type=["xlsx"])
 months_to_predict = st.sidebar.slider("🔮 Forecast Months Ahead", 1, 60, 3)
@@ -147,31 +149,27 @@ if uploaded_file:
 
         col1, col2, col3 = st.columns(3)
         col1.metric("💰 Forecasted Sales", f"{df_future['forecast_sales'].sum():,.0f} THB")
-        col2.metric("📦 Total SKUs", df_future["product_name"].nunique())
+        col2.metric("📦 Total SKUs", f"{df_future['product_name'].nunique()}")
         col3.metric("📈 Avg. Sales/SKU", f"{df_future['forecast_sales'].mean():,.2f} THB")
 
-        st.subheader("📈 Forecasted Sales Trend by Month")
-        fig1 = px.line(df_future.groupby("year_month")["forecast_sales"].sum().reset_index(),
-                       x="year_month", y="forecast_sales", markers=True)
-        st.plotly_chart(fig1, use_container_width=True)
+        st.subheader("📈 Forecasted Sales Trend")
+        trend = df_future.groupby("year_month")["forecast_sales"].sum().reset_index()
+        st.plotly_chart(px.line(trend, x="year_month", y="forecast_sales", markers=True), use_container_width=True)
 
         st.subheader("🏆 Top Forecasted Products")
-        top_products = df_future.groupby("product_name")["forecast_sales"].sum().sort_values(ascending=False).head(15).reset_index()
-        fig2 = px.bar(top_products, x="forecast_sales", y="product_name", orientation="h")
-        st.plotly_chart(fig2, use_container_width=True)
+        top_products = df_future.groupby("product_name")["forecast_sales"].sum().sort_values(ascending=False).head(10).reset_index()
+        st.plotly_chart(px.bar(top_products, x="forecast_sales", y="product_name", orientation="h"), use_container_width=True)
 
         st.subheader("📊 Forecasted Sales by Platform")
-        fig3 = px.pie(df_future.groupby("platform")["forecast_sales"].sum().reset_index(),
-                      names="platform", values="forecast_sales", hole=0.4)
-        st.plotly_chart(fig3, use_container_width=True)
+        pie_data = df_future.groupby("platform")["forecast_sales"].sum().reset_index()
+        st.plotly_chart(px.pie(pie_data, names="platform", values="forecast_sales", hole=0.3), use_container_width=True)
 
         st.subheader("💡 AI วิเคราะห์ & แนะนำช่วงเวลาที่ควรโปรโมต")
-        ai_msg = ai_recommendation(df_future)
-        st.success(ai_msg)
+        st.info(generate_ai_insight(top_products))
 
-        st.subheader("📄 Forecast Table (All SKUs)")
+        st.subheader("📄 Forecast Table")
         st.dataframe(df_future, use_container_width=True)
     else:
-        st.warning("⚠️ ไม่พบ Sheet ที่ชื่อ Performance หรือ GMV")
+        st.warning("❗ ไม่พบ Sheet ที่ชื่อ Performance หรือ GMV")
 else:
-    st.info("📤 กรุณาอัปโหลดไฟล์ Excel เพื่อเริ่มต้น")
+    st.info("📤 กรุณาอัปโหลดไฟล์ Excel")
