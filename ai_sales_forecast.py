@@ -8,6 +8,11 @@ from sklearn.preprocessing import LabelEncoder
 from datetime import datetime
 from statsmodels.tsa.seasonal import seasonal_decompose
 from sklearn.model_selection import GridSearchCV, KFold
+import openai
+import pyttsx3
+
+# ตั้งค่า OpenAI API Key จาก secrets
+openai.api_key = st.secrets["openai_api_key"]
 
 st.set_page_config(page_title="📊 AI Sales & Product Forecasting", layout="wide")
 
@@ -35,16 +40,31 @@ def recommend_insights(df_future, summary):
             f"📅 เดือน `{row['year_month']}` แคมเปญ `{row['campaign_type']}` "
             f"คาดการณ์ยอดขาย **{row['forecast_sales']:,.0f} THB**"
         )
-        past = summary[(summary["campaign_type"] == row["campaign_type"]) & 
-                       (summary["year_month"] < row["year_month"])]
-        if not past.empty:
-            avg_past = past["sales_thb"].mean()
-            st.info(f"🔍 จากประวัติ แคมเปญนี้เคยทำยอดเฉลี่ย **{avg_past:,.0f} THB**")
 
-    st.subheader("🏆 แบรนด์ที่ควรโฟกัส")
-    top_brands = df_future.groupby("brand")["forecast_sales"].sum().sort_values(ascending=False).head(3)
-    for brand, val in top_brands.items():
-        st.info(f"✅ แบรนด์ `{brand}` มียอดขายคาดการณ์สูงถึง **{val:,.0f} THB**")
+    st.subheader("🧠 สรุปโดย LLM (GPT)")
+    insight_prompt = (
+        "สรุปแนวโน้มยอดขายสินค้าโดยดูจากแคมเปญที่คาดว่ายอดขายสูง "
+        "พร้อมให้คำแนะนำสำหรับนักการตลาดให้เข้าใจง่ายแบบภาษาไทย:"
+    )
+    for _, row in top_campaigns.iterrows():
+        insight_prompt += f"เดือน {row['year_month']} แคมเปญ {row['campaign_type']} มียอดขาย {row['forecast_sales']:,.0f} บาท\n"
+
+    try:
+        gpt_response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": insight_prompt}],
+            max_tokens=250
+        )
+        summary_text = gpt_response['choices'][0]['message']['content']
+        st.info(summary_text)
+
+        if st.button("🔊 อ่านออกเสียง"):
+            engine = pyttsx3.init()
+            engine.say(summary_text)
+            engine.runAndWait()
+
+    except Exception as e:
+        st.error(f"เกิดข้อผิดพลาดในการสรุปด้วย GPT: {e}")
 
 @st.cache_resource
 def train_model(df_perf, df_gmv, fast_mode=False):
@@ -80,32 +100,6 @@ def train_model(df_perf, df_gmv, fast_mode=False):
     }).reset_index()
     summary = pd.merge(summary, growth_rates, on=["product_name", "platform"], how="left").fillna(0)
 
-    if fast_mode:
-        summary = summary[summary["product_name"].isin(summary["product_name"].unique()[:30])]
-        summary["trend"] = summary["sales_thb"]
-    else:
-        trend_list = []
-        for (product, platform), group in summary.groupby(["product_name", "platform"]):
-            ts = group.sort_values("year_month").set_index("year_month")["sales_thb"]
-            ts.index = pd.PeriodIndex(ts.index, freq="M")
-            if len(ts) >= 6:
-                try:
-                    result = seasonal_decompose(ts, model='additive', period=3, extrapolate_trend='freq')
-                    trend = result.trend.fillna(method='bfill').fillna(method='ffill')
-                except:
-                    trend = ts.copy()
-            else:
-                trend = ts.copy()
-            trend_df = trend.reset_index()
-            trend_df["product_name"] = product
-            trend_df["platform"] = platform
-            trend_df = trend_df.rename(columns={"sales_thb": "trend"})
-            trend_list.append(trend_df)
-        trend_all = pd.concat(trend_list)
-        trend_all["year_month"] = trend_all["year_month"].astype(str)
-        summary = pd.merge(summary, trend_all, on=["year_month", "product_name", "platform"], how="left")
-        summary["trend"] = summary["trend"].fillna(method='bfill').fillna(method='ffill')
-
     le_brand = LabelEncoder()
     le_product = LabelEncoder()
     le_platform = LabelEncoder()
@@ -116,7 +110,7 @@ def train_model(df_perf, df_gmv, fast_mode=False):
     summary["platform_enc"] = le_platform.fit_transform(summary["platform"])
     summary["campaign_enc"] = le_campaign.fit_transform(summary["campaign_type"])
 
-    features = ["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "avg_growth_rate", "trend"]
+    features = ["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "avg_growth_rate"]
     X = summary[features].replace([np.inf, -np.inf], np.nan).dropna()
     y = summary.loc[X.index, "sales_thb"]
 
@@ -160,24 +154,21 @@ def forecast_future(summary, model, encoders, months_ahead):
     future["month_enc"] = future["year_month"].apply(lambda x: int(x.replace("-", "")))
 
     growth_lookup = summary.groupby(["product_name", "platform"])["avg_growth_rate"].mean().reset_index()
-    trend_lookup = summary.groupby(["product_name", "platform"])["trend"].mean().reset_index()
     future = pd.merge(future, growth_lookup, on=["product_name", "platform"], how="left")
-    future = pd.merge(future, trend_lookup, on=["product_name", "platform"], how="left")
     future["avg_growth_rate"] = future["avg_growth_rate"].fillna(0)
-    future["trend"] = future["trend"].fillna(method='ffill').fillna(method='bfill')
 
-    features = ["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "avg_growth_rate", "trend"]
+    features = ["brand_enc", "product_enc", "platform_enc", "campaign_enc", "month_enc", "avg_growth_rate"]
     X = future[features].replace([np.inf, -np.inf], np.nan).dropna()
     future = future.loc[X.index]
     future["forecast_sales"] = model.predict(X)
 
     return future
 
-# === UI ===
-st.title("🧠 AI Sales & Product Forecasting Dashboard")
+# UI
+st.title("🧠 AI Sales & Product Forecasting + LLM + Voice")
 uploaded_file = st.sidebar.file_uploader("📂 Upload Excel File", type=["xlsx"])
 months = st.sidebar.slider("🔮 Forecast Months Ahead", 1, 60, 3)
-fast_mode = st.sidebar.checkbox("⚡ Fast Mode (Skip Trend & Tuning)", value=False)
+fast_mode = st.sidebar.checkbox("⚡ Fast Mode", value=False)
 
 if uploaded_file:
     dfs = load_excel(uploaded_file)
