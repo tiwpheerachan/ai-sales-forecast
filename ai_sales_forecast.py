@@ -60,6 +60,19 @@ def recommend_insights(df_future, summary):
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการสรุปด้วย GPT: {e}")
 
+@st.cache_data
+def load_excel(file):
+    xls = pd.ExcelFile(file)
+    dfs = {}
+    for sheet in xls.sheet_names:
+        try:
+            df = xls.parse(sheet)
+            df.columns = df.columns.str.strip()
+            dfs[sheet] = df
+        except Exception as e:
+            print(f"❌ Error loading sheet {sheet}: {e}")
+            continue
+    return dfs
 
 @st.cache_resource
 def train_model(df_perf, df_gmv, fast_mode=False):
