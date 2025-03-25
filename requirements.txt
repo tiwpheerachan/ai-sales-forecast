@@ -9,3 +9,4 @@ statsmodels
 openai
 tqdm
 python-dotenv
+pyttsx3
