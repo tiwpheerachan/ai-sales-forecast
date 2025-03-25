@@ -1,4 +1,3 @@
-
 streamlit
 pandas
 scikit-learn
@@ -7,3 +6,6 @@ matplotlib
 plotly
 numpy
 statsmodels
+openai
+tqdm
+python-dotenv
