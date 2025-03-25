@@ -10,3 +10,4 @@ openai
 tqdm
 python-dotenv
 pyttsx3
+openai>=1.0.0
