@@ -1,18 +1,18 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import openai
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import LabelEncoder
 from datetime import datetime
 import calendar
-import openai
-
-# Load API Key securely
-openai.api_key = st.secrets["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"]
+import os
 
 st.set_page_config(page_title="📊 AI Sales & Product Forecasting", layout="wide")
+
+# Set OpenAI API Key securely
+openai.api_key = st.secrets["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"]
 
 @st.cache_data
 def load_excel(file):
@@ -48,8 +48,8 @@ def train_model(df_perf, df_gmv):
     df["conversion_rate"] = pd.to_numeric(df["conversion_rate"], errors="coerce")
     df["year_month"] = df["year_month"].astype(str)
     df = df.dropna(subset=["sales_thb", "brand", "product_name", "platform", "campaign_type"])
-
     df["month_numeric"] = df["year_month"].apply(lambda x: int(x.replace("-", "")))
+
     growth_rates = df.groupby(["product_name", "platform"]).apply(
         lambda g: g.sort_values("month_numeric").assign(
             pct_change=g["sales_thb"].pct_change().fillna(0)
@@ -110,25 +110,24 @@ def forecast_future(summary, model, encoders, months_ahead, growth_expectation=1
 
     return future
 
-def generate_ai_recommendation(df):
-    top = df.sort_values("forecast_sales", ascending=False).head(5)
-    prompt = "คุณคือผู้ช่วยวิเคราะห์ยอดขายสินค้า AI วิเคราะห์ว่าทำไมสินค้าด้านล่างถึงจะขายดี:"
-"
-    for i, row in top.iterrows():
-        prompt += f"- {row['product_name']} (ยอดขายคาดการณ์ {row['forecast_sales']:.2f} บาท) บน {row['platform']} เดือน {row['year_month']}, แคมเปญ {row['campaign_type']}
-"
-    prompt += "
-ช่วยเขียนคำอธิบายเชิงกลยุทธ์ที่เข้าใจง่ายและน่าเชื่อถือ"
+def generate_ai_insight(df_top):
+    prompt = f"""
+คุณคือผู้ช่วย AI ด้านการตลาด วิเคราะห์จากสินค้าขายดีด้านล่างนี้:
 
+{df_top.to_string(index=False)}
+
+โปรดให้ข้อเสนอแนะว่าทำไมสินค้ากลุ่มนี้ถึงขายดี และควรโปรโมตช่วงไหน พร้อมเหตุผลแบบมืออาชีพ
+"""
     response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-        max_tokens=500
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": "คุณคือผู้เชี่ยวชาญด้านการตลาด วิเคราะห์ยอดขาย และแนะนำช่วงเวลาที่ควรโปรโมต"},
+            {"role": "user", "content": prompt}
+        ]
     )
-    return response.choices[0].message.content
+    return response.choices[0].message.content.strip()
 
-# === Streamlit UI ===
+# === UI ===
 st.title("🧠 AI Sales & Product Forecasting Dashboard")
 uploaded_file = st.sidebar.file_uploader("📂 Upload Excel File", type=["xlsx"])
 months_to_predict = st.sidebar.slider("🔮 Forecast Months Ahead", 1, 60, 3)
@@ -148,39 +147,29 @@ if uploaded_file:
         if platform != "All":
             df_future = df_future[df_future["platform"] == platform]
 
-        total_sales = df_future["forecast_sales"].sum()
-        total_skus = df_future["product_name"].nunique()
-        avg_sales = total_sales / total_skus if total_skus > 0 else 0
-
         col1, col2, col3 = st.columns(3)
-        col1.metric("💰 Forecasted Sales", f"{total_sales:,.0f} THB")
-        col2.metric("📦 Total SKUs", f"{total_skus}")
-        col3.metric("📈 Avg. Sales/SKU", f"{avg_sales:,.2f} THB")
+        col1.metric("💰 Forecasted Sales", f"{df_future['forecast_sales'].sum():,.0f} THB")
+        col2.metric("📦 Total SKUs", f"{df_future['product_name'].nunique()}")
+        col3.metric("📈 Avg. Sales/SKU", f"{df_future['forecast_sales'].mean():,.2f} THB")
 
-        st.subheader("📈 Forecasted Sales Trend by Month")
-        df_trend = df_future.groupby("year_month")["forecast_sales"].sum().reset_index()
-        fig1 = px.line(df_trend, x="year_month", y="forecast_sales", markers=True)
-        st.plotly_chart(fig1, use_container_width=True)
+        st.subheader("📈 Forecasted Sales Trend")
+        trend = df_future.groupby("year_month")["forecast_sales"].sum().reset_index()
+        st.plotly_chart(px.line(trend, x="year_month", y="forecast_sales", markers=True), use_container_width=True)
 
         st.subheader("🏆 Top Forecasted Products")
-        top_products = df_future.groupby("product_name")["forecast_sales"].sum().sort_values(ascending=False).head(15).reset_index()
-        fig2 = px.bar(top_products, x="forecast_sales", y="product_name", orientation="h", title="Top Products")
-        st.plotly_chart(fig2, use_container_width=True)
+        top_products = df_future.groupby("product_name")["forecast_sales"].sum().sort_values(ascending=False).head(10).reset_index()
+        st.plotly_chart(px.bar(top_products, x="forecast_sales", y="product_name", orientation="h"), use_container_width=True)
 
         st.subheader("📊 Forecasted Sales by Platform")
-        platform_summary = df_future.groupby("platform")["forecast_sales"].sum().reset_index()
-        fig3 = px.pie(platform_summary, names="platform", values="forecast_sales", hole=0.4)
-        st.plotly_chart(fig3, use_container_width=True)
+        pie_data = df_future.groupby("platform")["forecast_sales"].sum().reset_index()
+        st.plotly_chart(px.pie(pie_data, names="platform", values="forecast_sales", hole=0.3), use_container_width=True)
 
-        st.subheader("💡 AI แนะนำเชิงกลยุทธ์")
-        with st.spinner("กำลังวิเคราะห์โดย AI..."):
-            ai_text = generate_ai_recommendation(df_future)
-            st.success("AI วิเคราะห์สำเร็จ ✅")
-            st.markdown(ai_text)
+        st.subheader("💡 AI วิเคราะห์ & แนะนำช่วงเวลาที่ควรโปรโมต")
+        st.info(generate_ai_insight(top_products))
 
-        st.subheader("📄 Forecast Table (All SKUs)")
+        st.subheader("📄 Forecast Table")
         st.dataframe(df_future, use_container_width=True)
     else:
-        st.warning("⚠️ ไม่พบ Sheet ที่ชื่อ Performance หรือ GMV")
+        st.warning("❗ ไม่พบ Sheet ที่ชื่อ Performance หรือ GMV")
 else:
-    st.info("📤 กรุณาอัปโหลดไฟล์ Excel เพื่อเริ่มต้น")
+    st.info("📤 กรุณาอัปโหลดไฟล์ Excel")
