@@ -10,7 +10,7 @@ import calendar
 import openai
 
 # Load API Key securely
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+openai.api_key = st.secrets["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"]
 
 st.set_page_config(page_title="📊 AI Sales & Product Forecasting", layout="wide")
 
