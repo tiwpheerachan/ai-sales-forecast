@@ -112,8 +112,7 @@ def forecast_future(summary, model, encoders, months_ahead, growth_expectation=1
 
 def generate_ai_recommendation(df):
     top = df.sort_values("forecast_sales", ascending=False).head(5)
-    prompt = "คุณคือผู้ช่วยวิเคราะห์ยอดขายสินค้า AI วิเคราะห์ว่าทำไมสินค้าด้านล่างถึงจะขายดี:
-
+    prompt = "คุณคือผู้ช่วยวิเคราะห์ยอดขายสินค้า AI วิเคราะห์ว่าทำไมสินค้าด้านล่างถึงจะขายดี:"
 "
     for i, row in top.iterrows():
         prompt += f"- {row['product_name']} (ยอดขายคาดการณ์ {row['forecast_sales']:.2f} บาท) บน {row['platform']} เดือน {row['year_month']}, แคมเปญ {row['campaign_type']}
